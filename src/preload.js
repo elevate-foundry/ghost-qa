@@ -17,11 +17,15 @@ contextBridge.exposeInMainWorld('ghostAPI', {
   onTestScreenshot: (callback) => {
     ipcRenderer.on('test-screenshot', (event, screenshot) => callback(screenshot));
   },
+  onTestLLMAnalysis: (callback) => {
+    ipcRenderer.on('test-llm-analysis', (event, analysis) => callback(analysis));
+  },
   
   removeAllListeners: () => {
     ipcRenderer.removeAllListeners('test-error');
     ipcRenderer.removeAllListeners('test-log');
     ipcRenderer.removeAllListeners('test-stats');
     ipcRenderer.removeAllListeners('test-screenshot');
+    ipcRenderer.removeAllListeners('test-llm-analysis');
   }
 });

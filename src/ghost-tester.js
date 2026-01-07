@@ -2,6 +2,7 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const { app } = require('electron');
+const { LLMAnalyzer } = require('./llm-analyzer');
 
 class GhostTester {
   constructor(config, callbacks) {
@@ -12,6 +13,10 @@ class GhostTester {
       maxActions: config.maxActions || 100,
       screenshotOnError: config.screenshotOnError !== false,
       screenshotInterval: config.screenshotInterval || 5000,
+      llmEnabled: config.llmEnabled || false,
+      llmProvider: config.llmProvider || 'openai',
+      llmApiKey: config.llmApiKey || '',
+      llmAnalysisInterval: config.llmAnalysisInterval || 30000,
       ...config
     };
     
@@ -20,15 +25,27 @@ class GhostTester {
     this.page = null;
     this.running = false;
     this.screenshotTimer = null;
+    this.llmAnalysisTimer = null;
+    this.llmAnalyzer = null;
     this.stats = {
       actionsPerformed: 0,
       errorsFound: 0,
       pagesVisited: 0,
       formsSubmitted: 0,
+      llmIssuesFound: 0,
       startTime: null
     };
     this.visitedUrls = new Set();
     this.actionQueue = [];
+    
+    // Initialize LLM analyzer if enabled
+    if (this.config.llmEnabled && this.config.llmApiKey) {
+      this.llmAnalyzer = new LLMAnalyzer({
+        provider: this.config.llmProvider,
+        apiKey: this.config.llmApiKey,
+        analysisInterval: this.config.llmAnalysisInterval
+      });
+    }
   }
 
   async start() {
@@ -78,6 +95,12 @@ class GhostTester {
       
       // Start periodic screenshot capture
       this.startScreenshotCapture();
+      
+      // Start LLM analysis if enabled
+      if (this.llmAnalyzer) {
+        this.startLLMAnalysis();
+        this.log('info', `LLM analysis enabled (${this.config.llmProvider})`);
+      }
       
       // Start the testing loop
       this.testLoop();
@@ -424,13 +447,19 @@ class GhostTester {
       this.screenshotTimer = null;
     }
     
+    // Stop LLM analysis timer
+    if (this.llmAnalysisTimer) {
+      clearInterval(this.llmAnalysisTimer);
+      this.llmAnalysisTimer = null;
+    }
+    
     if (this.browser) {
       await this.browser.close();
       this.browser = null;
       this.page = null;
     }
     
-    this.log('info', `Session complete. Actions: ${this.stats.actionsPerformed}, Errors: ${this.stats.errorsFound}`);
+    this.log('info', `Session complete. Actions: ${this.stats.actionsPerformed}, Errors: ${this.stats.errorsFound}, LLM Issues: ${this.stats.llmIssuesFound}`);
   }
 
   startScreenshotCapture() {
@@ -460,6 +489,66 @@ class GhostTester {
       }
     } catch (err) {
       // Page may be navigating
+    }
+  }
+
+  startLLMAnalysis() {
+    // Run initial analysis after a short delay
+    setTimeout(() => this.runLLMAnalysis(), 5000);
+    
+    // Set up periodic analysis
+    this.llmAnalysisTimer = setInterval(() => {
+      this.runLLMAnalysis();
+    }, this.config.llmAnalysisInterval);
+  }
+
+  async runLLMAnalysis() {
+    if (!this.page || !this.running || !this.llmAnalyzer) return;
+    
+    try {
+      this.log('info', '🤖 Running LLM analysis...');
+      
+      const buffer = await this.page.screenshot({ type: 'jpeg', quality: 80 });
+      const base64 = buffer.toString('base64');
+      const dataUrl = `data:image/jpeg;base64,${base64}`;
+      
+      const analysis = await this.llmAnalyzer.analyzeScreenshot(dataUrl, {
+        url: this.page.url(),
+        actionsPerformed: this.stats.actionsPerformed,
+        errorsFound: this.stats.errorsFound
+      });
+      
+      if (analysis && !analysis.error) {
+        // Report findings
+        if (analysis.issues && analysis.issues.length > 0) {
+          this.stats.llmIssuesFound += analysis.issues.length;
+          
+          for (const issue of analysis.issues) {
+            this.log('llm', `[${issue.severity?.toUpperCase()}] ${issue.description}`);
+            
+            if (issue.severity === 'high') {
+              this.reportError('LLM Analysis', `${issue.category}: ${issue.description} (${issue.location})`);
+            }
+          }
+        }
+        
+        // Send full analysis to UI
+        if (this.callbacks.onLLMAnalysis) {
+          this.callbacks.onLLMAnalysis({
+            ...analysis,
+            url: this.page.url(),
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        if (analysis.summary) {
+          this.log('info', `🤖 Analysis: ${analysis.summary} (Score: ${analysis.overallScore}/10)`);
+        }
+      } else if (analysis?.error) {
+        this.log('warning', `LLM analysis failed: ${analysis.error}`);
+      }
+    } catch (err) {
+      this.log('warning', `LLM analysis error: ${err.message}`);
     }
   }
 

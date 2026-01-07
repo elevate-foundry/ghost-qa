@@ -71,6 +71,15 @@ ipcMain.handle('start-testing', async (event, config) => {
       },
       onScreenshot: (screenshot) => {
         mainWindow.webContents.send('test-screenshot', screenshot);
+      },
+      onLLMAnalysis: (analysis) => {
+        mainWindow.webContents.send('test-llm-analysis', analysis);
+        if (analysis.issues?.length > 0) {
+          const highSeverity = analysis.issues.filter(i => i.severity === 'high').length;
+          if (highSeverity > 0) {
+            showNotification('Ghost QA: LLM Found Issues!', `${highSeverity} high severity issue(s) detected`);
+          }
+        }
       }
     });
     

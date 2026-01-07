@@ -248,6 +248,7 @@ const logColors = {
   action: '#60a5fa',
   navigation: '#a78bfa',
   info: '#a0a0a0',
+  llm: '#f472b6',
 };
 
 function App() {
@@ -258,17 +259,24 @@ function App() {
     maxActions: 100,
     screenshotOnError: true,
     screenshotInterval: 5000,
+    llmEnabled: false,
+    llmProvider: 'openai',
+    llmApiKey: '',
+    llmAnalysisInterval: 30000,
   });
   const [stats, setStats] = useState({
     actionsPerformed: 0,
     errorsFound: 0,
     pagesVisited: 0,
+    llmIssuesFound: 0,
     runtime: 0,
   });
   const [logs, setLogs] = useState([]);
   const [screenshot, setScreenshot] = useState(null);
+  const [llmAnalysis, setLlmAnalysis] = useState(null);
   const [activeTab, setActiveTab] = useState('screenshot');
   const [isStarting, setIsStarting] = useState(false);
+  const [showLLMConfig, setShowLLMConfig] = useState(false);
   const logListRef = useRef(null);
 
   useEffect(() => {
@@ -290,6 +298,10 @@ function App() {
 
     window.ghostAPI.onTestScreenshot((data) => {
       setScreenshot(data);
+    });
+
+    window.ghostAPI.onTestLLMAnalysis((analysis) => {
+      setLlmAnalysis(analysis);
     });
 
     // Check initial status
@@ -444,10 +456,98 @@ function App() {
               </div>
             </div>
 
+            {/* LLM Config Toggle */}
+            <div 
+              style={{ 
+                background: config.llmEnabled ? 'rgba(244, 114, 182, 0.1)' : '#16213e',
+                border: config.llmEnabled ? '1px solid #f472b6' : '1px solid rgba(255, 255, 255, 0.1)',
+                borderRadius: '8px',
+                padding: '12px',
+                cursor: 'pointer'
+              }}
+              onClick={() => setShowLLMConfig(!showLLMConfig)}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span>🤖</span>
+                  <span style={{ fontSize: '13px', color: config.llmEnabled ? '#f472b6' : '#a0a0a0' }}>
+                    AI Vision Analysis {config.llmEnabled ? '(Enabled)' : '(Disabled)'}
+                  </span>
+                </div>
+                <span style={{ color: '#a0a0a0', fontSize: '12px' }}>{showLLMConfig ? '▲' : '▼'}</span>
+              </div>
+              
+              {showLLMConfig && (
+                <div style={{ marginTop: '12px' }} onClick={(e) => e.stopPropagation()}>
+                  <div style={styles.checkboxGroup}>
+                    <input
+                      type="checkbox"
+                      id="llmEnabled"
+                      checked={config.llmEnabled}
+                      onChange={(e) => setConfig({ ...config, llmEnabled: e.target.checked })}
+                      style={{ width: '18px', height: '18px', accentColor: '#f472b6' }}
+                    />
+                    <label htmlFor="llmEnabled" style={{ fontSize: '13px', color: '#a0a0a0' }}>
+                      Enable LLM screenshot analysis
+                    </label>
+                  </div>
+                  
+                  {config.llmEnabled && (
+                    <>
+                      <div style={{ ...styles.inputGroup, marginTop: '12px' }}>
+                        <label style={styles.label}>Provider</label>
+                        <select
+                          style={{ ...styles.input, cursor: 'pointer' }}
+                          value={config.llmProvider}
+                          onChange={(e) => setConfig({ ...config, llmProvider: e.target.value })}
+                        >
+                          <option value="openai">OpenAI (GPT-4o)</option>
+                          <option value="anthropic">Anthropic (Claude)</option>
+                          <option value="ollama">Ollama (Local)</option>
+                        </select>
+                      </div>
+                      
+                      <div style={{ ...styles.inputGroup, marginTop: '8px' }}>
+                        <label style={styles.label}>
+                          {config.llmProvider === 'ollama' ? 'Ollama Host' : 'API Key'}
+                        </label>
+                        <input
+                          type={config.llmProvider === 'ollama' ? 'text' : 'password'}
+                          style={styles.input}
+                          value={config.llmProvider === 'ollama' ? (config.ollamaHost || 'http://localhost:11434') : config.llmApiKey}
+                          onChange={(e) => setConfig({ 
+                            ...config, 
+                            [config.llmProvider === 'ollama' ? 'ollamaHost' : 'llmApiKey']: e.target.value 
+                          })}
+                          placeholder={config.llmProvider === 'ollama' ? 'http://localhost:11434' : 'sk-...'}
+                        />
+                      </div>
+                      
+                      <div style={{ ...styles.inputGroup, marginTop: '8px' }}>
+                        <label style={styles.label}>Analysis Interval (ms)</label>
+                        <input
+                          type="number"
+                          style={styles.input}
+                          value={config.llmAnalysisInterval}
+                          onChange={(e) => setConfig({ ...config, llmAnalysisInterval: parseInt(e.target.value) || 30000 })}
+                          min={10000}
+                          max={120000}
+                        />
+                      </div>
+                      
+                      <p style={{ fontSize: '11px', color: '#a0a0a0', marginTop: '8px' }}>
+                        The AI will analyze screenshots and report UI/UX issues, accessibility problems, and visual bugs.
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
             <button
               style={{ ...styles.btn, ...styles.primaryBtn }}
               onClick={handleStart}
-              disabled={isStarting}
+              disabled={isStarting || (config.llmEnabled && !config.llmApiKey && config.llmProvider !== 'ollama')}
             >
               <span>{isStarting ? '⏳' : '▶'}</span>
               {isStarting ? 'Starting...' : 'Start Testing'}
@@ -496,6 +596,14 @@ function App() {
               >
                 Activity Log
               </button>
+              {config.llmEnabled && (
+                <button
+                  style={{ ...styles.tab, ...(activeTab === 'ai' ? { ...styles.activeTab, background: '#f472b6', borderColor: '#f472b6' } : {}) }}
+                  onClick={() => setActiveTab('ai')}
+                >
+                  🤖 AI Analysis {llmAnalysis?.issues?.length > 0 && `(${llmAnalysis.issues.length})`}
+                </button>
+              )}
             </div>
 
             {activeTab === 'screenshot' ? (
@@ -514,6 +622,82 @@ function App() {
                   <div style={styles.screenshotPlaceholder}>Waiting for screenshot...</div>
                 )}
               </div>
+            ) : activeTab === 'ai' ? (
+              <div style={{ ...styles.screenshotContainer, overflow: 'auto' }}>
+                <div style={{ ...styles.screenshotHeader, background: 'rgba(244, 114, 182, 0.2)' }}>
+                  <span>🤖 AI Vision Analysis</span>
+                  {llmAnalysis && (
+                    <span style={{ fontSize: '10px', color: '#f472b6' }}>
+                      Score: {llmAnalysis.overallScore}/10
+                    </span>
+                  )}
+                </div>
+                {llmAnalysis ? (
+                  <div style={{ padding: '12px' }}>
+                    {llmAnalysis.summary && (
+                      <p style={{ fontSize: '13px', color: '#a0a0a0', marginBottom: '12px', fontStyle: 'italic' }}>
+                        "{llmAnalysis.summary}"
+                      </p>
+                    )}
+                    {llmAnalysis.issues?.length > 0 ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {llmAnalysis.issues.map((issue, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              padding: '10px',
+                              borderRadius: '6px',
+                              background: issue.severity === 'high' ? 'rgba(239, 68, 68, 0.1)' : 
+                                         issue.severity === 'medium' ? 'rgba(251, 191, 36, 0.1)' : 
+                                         'rgba(255, 255, 255, 0.05)',
+                              border: `1px solid ${issue.severity === 'high' ? '#ef4444' : 
+                                                   issue.severity === 'medium' ? '#fbbf24' : 
+                                                   'rgba(255, 255, 255, 0.1)'}`,
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                              <span style={{
+                                fontSize: '10px',
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                background: issue.severity === 'high' ? '#ef4444' : 
+                                           issue.severity === 'medium' ? '#fbbf24' : '#6b7280',
+                                color: issue.severity === 'medium' ? '#000' : '#fff',
+                                textTransform: 'uppercase',
+                                fontWeight: 600,
+                              }}>
+                                {issue.severity}
+                              </span>
+                              <span style={{ fontSize: '10px', color: '#a0a0a0' }}>{issue.category}</span>
+                            </div>
+                            <p style={{ fontSize: '12px', color: '#fff', marginBottom: '4px' }}>
+                              {issue.description}
+                            </p>
+                            {issue.location && (
+                              <p style={{ fontSize: '11px', color: '#a0a0a0' }}>
+                                📍 {issue.location}
+                              </p>
+                            )}
+                            {issue.suggestion && (
+                              <p style={{ fontSize: '11px', color: '#4ade80', marginTop: '4px' }}>
+                                💡 {issue.suggestion}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ textAlign: 'center', padding: '20px', color: '#4ade80' }}>
+                        ✅ No issues found! The page looks good.
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={styles.screenshotPlaceholder}>
+                    Waiting for AI analysis... (runs every {config.llmAnalysisInterval / 1000}s)
+                  </div>
+                )}
+              </div>
             ) : (
               <div style={{ ...styles.logContainer, maxHeight: 'none', flex: 1 }}>
                 <div style={styles.logHeader}>Activity Log</div>
@@ -523,7 +707,8 @@ function App() {
                       key={i}
                       style={{
                         ...styles.logItem,
-                        background: log.level === 'error' ? 'rgba(239, 68, 68, 0.1)' : 'transparent',
+                        background: log.level === 'error' ? 'rgba(239, 68, 68, 0.1)' : 
+                                   log.level === 'llm' ? 'rgba(244, 114, 182, 0.1)' : 'transparent',
                       }}
                     >
                       <span style={styles.logTime}>{formatLogTime(log.timestamp)}</span>
