@@ -1,10 +1,16 @@
 const { app, BrowserWindow, ipcMain, Notification, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
 const { GhostTester } = require('./ghost-tester');
+const { SessionRecorder } = require('./session-recorder');
+const { SessionReplayer } = require('./session-replayer');
+const { GuardianWorker } = require('./guardian-worker');
 
 let mainWindow;
 let tray;
 let ghostTester = null;
+let sessionRecorder = null;
+let sessionReplayer = null;
+let guardianWorker = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -105,6 +111,216 @@ ipcMain.handle('get-status', () => {
   };
 });
 
+// ============ SESSION RECORDING ============
+
+ipcMain.handle('start-recording', async (event, config) => {
+  try {
+    if (sessionRecorder) {
+      await sessionRecorder.stop();
+    }
+    
+    sessionRecorder = new SessionRecorder(config, {
+      onRecordingStarted: (data) => {
+        mainWindow.webContents.send('recording-started', data);
+      },
+      onRecordingStopped: (session) => {
+        mainWindow.webContents.send('recording-stopped', session);
+      },
+      onAction: (action) => {
+        mainWindow.webContents.send('recording-action', action);
+      },
+      onLog: (log) => {
+        mainWindow.webContents.send('recording-log', log);
+      }
+    });
+    
+    await sessionRecorder.start();
+    return { success: true, sessionName: config.sessionName };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('stop-recording', async () => {
+  if (sessionRecorder) {
+    const session = await sessionRecorder.stop();
+    sessionRecorder = null;
+    return { success: true, session };
+  }
+  return { success: false, error: 'No recording in progress' };
+});
+
+ipcMain.handle('pause-recording', async () => {
+  if (sessionRecorder) {
+    await sessionRecorder.pause();
+    return { success: true };
+  }
+  return { success: false, error: 'No recording in progress' };
+});
+
+ipcMain.handle('resume-recording', async () => {
+  if (sessionRecorder) {
+    await sessionRecorder.resume();
+    return { success: true };
+  }
+  return { success: false, error: 'No recording in progress' };
+});
+
+ipcMain.handle('get-recording-status', () => {
+  return {
+    recording: sessionRecorder?.isRecording() || false,
+    info: sessionRecorder?.getSessionInfo() || null
+  };
+});
+
+// ============ SESSION MANAGEMENT ============
+
+ipcMain.handle('get-sessions', () => {
+  return SessionRecorder.getSessions();
+});
+
+ipcMain.handle('get-session', (event, sessionId) => {
+  return SessionRecorder.getSession(sessionId);
+});
+
+ipcMain.handle('delete-session', (event, sessionId) => {
+  return SessionRecorder.deleteSession(sessionId);
+});
+
+// ============ SESSION REPLAY ============
+
+ipcMain.handle('replay-session', async (event, sessionId, config = {}) => {
+  try {
+    const session = SessionRecorder.getSession(sessionId);
+    if (!session) {
+      return { success: false, error: 'Session not found' };
+    }
+    
+    if (sessionReplayer) {
+      sessionReplayer.abort();
+    }
+    
+    sessionReplayer = new SessionReplayer(session, config, {
+      onLog: (log) => {
+        mainWindow.webContents.send('replay-log', log);
+      },
+      onActionComplete: (data) => {
+        mainWindow.webContents.send('replay-progress', data);
+      },
+      onComplete: (results) => {
+        mainWindow.webContents.send('replay-complete', results);
+        if (results.status === 'failed') {
+          showNotification('Ghost QA: Regression Found!', `${results.regressions.length} action(s) failed during replay`);
+        }
+      }
+    });
+    
+    // Start replay in background
+    sessionReplayer.start().then(() => {
+      sessionReplayer = null;
+    });
+    
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('stop-replay', () => {
+  if (sessionReplayer) {
+    sessionReplayer.abort();
+    sessionReplayer = null;
+    return { success: true };
+  }
+  return { success: false, error: 'No replay in progress' };
+});
+
+ipcMain.handle('get-replay-status', () => {
+  return {
+    running: sessionReplayer?.isRunning() || false,
+    progress: sessionReplayer?.getProgress() || null
+  };
+});
+
+// ============ GUARDIAN MODE ============
+
+ipcMain.handle('start-guardian', async (event, config) => {
+  try {
+    if (guardianWorker) {
+      await guardianWorker.stop();
+    }
+    
+    guardianWorker = new GuardianWorker(config, {
+      onStarted: (data) => {
+        mainWindow.webContents.send('guardian-started', data);
+      },
+      onStopped: (stats) => {
+        mainWindow.webContents.send('guardian-stopped', stats);
+      },
+      onCheckComplete: (data) => {
+        mainWindow.webContents.send('guardian-check-complete', data);
+      },
+      onRegression: (data) => {
+        mainWindow.webContents.send('guardian-regression', data);
+        showNotification('👻 Ghost QA: Regression Detected!', 
+          `Session "${data.sessionId}" failed with ${data.results.regressions.length} broken action(s)`);
+      },
+      onLog: (log) => {
+        mainWindow.webContents.send('guardian-log', log);
+      },
+      onReplayProgress: (data) => {
+        mainWindow.webContents.send('replay-progress', data);
+      }
+    });
+    
+    await guardianWorker.start();
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('stop-guardian', async () => {
+  if (guardianWorker) {
+    await guardianWorker.stop();
+    guardianWorker = null;
+    return { success: true };
+  }
+  return { success: false, error: 'Guardian not running' };
+});
+
+ipcMain.handle('get-guardian-status', () => {
+  return {
+    running: guardianWorker?.isRunning() || false,
+    stats: guardianWorker?.getStats() || null,
+    sessions: guardianWorker?.getWatchedSessions() || []
+  };
+});
+
+ipcMain.handle('add-session-to-guardian', (event, sessionId) => {
+  if (guardianWorker) {
+    guardianWorker.addSession(sessionId);
+    return { success: true };
+  }
+  return { success: false, error: 'Guardian not running' };
+});
+
+ipcMain.handle('remove-session-from-guardian', (event, sessionId) => {
+  if (guardianWorker) {
+    guardianWorker.removeSession(sessionId);
+    return { success: true };
+  }
+  return { success: false, error: 'Guardian not running' };
+});
+
+ipcMain.handle('trigger-guardian-check', async () => {
+  if (guardianWorker) {
+    await guardianWorker.triggerCheck();
+    return { success: true };
+  }
+  return { success: false, error: 'Guardian not running' };
+});
+
 function showNotification(title, body) {
   if (Notification.isSupported()) {
     new Notification({ title, body }).show();
@@ -131,5 +347,14 @@ app.on('window-all-closed', () => {
 app.on('before-quit', async () => {
   if (ghostTester) {
     await ghostTester.stop();
+  }
+  if (sessionRecorder) {
+    await sessionRecorder.stop();
+  }
+  if (sessionReplayer) {
+    sessionReplayer.abort();
+  }
+  if (guardianWorker) {
+    await guardianWorker.stop();
   }
 });
