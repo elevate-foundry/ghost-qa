@@ -80,3 +80,17 @@ This opens DevTools for debugging.
 ## License
 
 MIT
+
+<!-- ELEVATE:BEGIN (auto-generated section; edits here are overwritten) -->
+## About
+
+| | |
+| --- | --- |
+| **Description** | Autonomous QA bot that tests your local web apps in the background. Built with Electron, React, and Playwright. |
+| **Language** | JavaScript |
+| **Commits** | 1 |
+| **Created** | 2026-01-07 |
+| **Last push** | 2026-01-07 |
+
+Part of [**elevate-foundry**](https://github.com/elevate-foundry) · [repository](https://github.com/elevate-foundry/ghost-qa)
+<!-- ELEVATE:END -->
